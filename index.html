@@ -1885,8 +1885,22 @@ async function confirmarRestaurar(backupId) {
     const { data } = await sb.from('las_backups').select('estado').eq('id', backupId).single();
     if (!data) { toast('Backup não encontrado', 'err'); return; }
     document.getElementById('modal-backups')?.remove();
-    _applyState(data.estado);
+   const est = data.estado;
+    _ignorarRT = false;
+    _ultimoSave = 0;
+    if (Array.isArray(est.pendentes))        { pendentes.length=0;        pendentes.push(...est.pendentes); }
+    if (Array.isArray(est.preCondicionando)) { preCondicionando.length=0; preCondicionando.push(...est.preCondicionando); }
+    if (Array.isArray(est.plantados))        { plantados.length=0;        plantados.push(...est.plantados); }
+    if (Array.isArray(est.historico))        { historico.length=0;        historico.push(...est.historico); }
+    if (Array.isArray(est.analistas))        { analistas.length=0;        analistas.push(...est.analistas); }
+    if (Array.isArray(est.CULTIVARES))       { CULTIVARES.length=0;       CULTIVARES.push(...est.CULTIVARES); }
+    if (Array.isArray(est.ESPECIES))         { ESPECIES.length=0;         ESPECIES.push(...est.ESPECIES); }
+    if (Array.isArray(est.canteiros) && est.canteiros.length === N_CANTEIROS) {
+      canteiros = est.canteiros.map(c => Array.isArray(c) ? c : Array(VAGAS_POR_CANTEIRO).fill(null));
+    }
     await dbSalvar();
+    toast('✓ Backup restaurado! Recarregando...', 'ok');
+    setTimeout(() => location.reload(), 1500);
     toast('✓ Backup restaurado com sucesso!', 'ok');
   } catch(e) {
     toast('Erro ao restaurar: ' + e.message, 'err');
