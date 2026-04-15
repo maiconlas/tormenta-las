@@ -5403,7 +5403,7 @@ init();
 // Cole ANTES do </script>
 
 // Aguarda o DOM carregar completamente antes de aplicar
-window.addEventListener('load', function() {
+(function() {
   // Para o realtime antigo
   try { if(window._sb && window._rtCh) window._sb.removeChannel(window._rtCh); } catch(e){}
 
@@ -5880,7 +5880,7 @@ window.addEventListener('load', function() {
 
   console.log('[PATCH v3] ✅ Todas as funções sobrescritas! Sistema multi-usuário ativo.');
   console.log('[PATCH v3] Funções ativas: dbInserirAmostra, dbAtualizarAmostra, dbSalvarConfig');
-});
+})();
 
 
 </script>
