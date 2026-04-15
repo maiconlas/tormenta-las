@@ -5399,573 +5399,489 @@ function toast(msg,type='ok'){
   clearTimeout(tt); tt=setTimeout(()=>el.classList.remove('show'),3500);
 }
 init();
-// ═══════════════════════════════════════════════════════════════
-// PATCH v2 — Arquitetura multi-usuário (substitui funções antigas)
-// Cole este bloco ANTES do </script> no index.html
-// ═══════════════════════════════════════════════════════════════
+// ═══ PATCH v3 — Multi-usuário sem conflitos ═══
+// Cole ANTES do </script>
 
-// Remove canal RT antigo se existir
-if (typeof _rtCh !== 'undefined' && _rtCh && typeof _sb !== 'undefined' && _sb) {
-  try { _sb.removeChannel(_rtCh); } catch(e) {}
-}
-
-// ── Nova camada de banco ─────────────────────────────────────
-function _rowToItem(row) {
-  return {
-    id:row.id, proto:row.proto, fin:row.fin, teste:row.teste,
-    cultivar:row.cultivar||'', especie:row.especie||'',
-    eaPeriodo:row.ea_periodo||'', qdAtivo:row.qd_ativo||false,
-    ts:row.ts, plantadoEm:row.plantado_em, leituraEm:row.leitura_em,
-    analista:row.analista||'', analistaLeitura:row.analista_leitura||'',
-    leituras:row.leituras||[], leiturasRealizadas:row.leituras_realizadas||[],
-    reteste:row.reteste||false, numReteste:row.num_reteste||0,
-    cancelado:row.cancelado||false,
-    canteiroIdx:row.canteiro_idx, vagaIdx:row.vaga_idx,
-    preCondInicioEm:row.pre_cond_inicio_em, dataPlantio:row.data_plantio,
-  };
-}
-
-function _itemToRow(item, status) {
-  return {
-    id:item.id, proto:item.proto, fin:item.fin||'', teste:item.teste,
-    cultivar:item.cultivar||'', especie:item.especie||'',
-    ea_periodo:item.eaPeriodo||'', qd_ativo:item.qdAtivo||false,
-    status, ts:item.ts||Date.now(),
-    plantado_em:item.plantadoEm||null, leitura_em:item.leituraEm||null,
-    analista:item.analista||'', analista_leitura:item.analistaLeitura||'',
-    leituras:item.leituras||[], leituras_realizadas:item.leiturasRealizadas||[],
-    reteste:item.reteste||false, num_reteste:item.numReteste||0,
-    cancelado:item.cancelado||false,
-    canteiro_idx:item.canteiroIdx??-1, vaga_idx:item.vagaIdx??-1,
-    pre_cond_inicio_em:item.preCondInicioEm||null,
-    data_plantio:item.dataPlantio||null,
-    updated_at:new Date().toISOString(),
-  };
-}
-
-async function dbCarregar() {
-  const sb = _initSB();
-  if (!sb) { console.warn('[DB] Supabase não disponível'); _renderAll(); return; }
-  try {
-    const { data: amostras, error: e1 } = await sb
-      .from('las_amostras').select('*').order('ts', { ascending: true });
-    if (e1) throw e1;
-
-    pendentes.length=0; preCondicionando.length=0; plantados.length=0; historico.length=0;
-    (amostras||[]).forEach(row => {
-      const item = _rowToItem(row);
-      if (row.status==='pendente')              pendentes.push(item);
-      else if (row.status==='preCondicionando') preCondicionando.push(item);
-      else if (row.status==='plantado')         plantados.push(item);
-      else if (row.status==='historico'||row.status==='cancelado') historico.push(item);
-    });
-    historico.sort((a,b)=>new Date(b.leituraEm||b.ts)-new Date(a.leituraEm||a.ts));
-
-    const { data: cfg } = await sb.from('las_config').select('*');
-    (cfg||[]).forEach(row => {
-      if (row.chave==='cultivares'&&Array.isArray(row.valor)){CULTIVARES.length=0;CULTIVARES.push(...row.valor);}
-      if (row.chave==='especies'  &&Array.isArray(row.valor)){ESPECIES.length=0;  ESPECIES.push(...row.valor);}
-      if (row.chave==='analistas' &&Array.isArray(row.valor)){analistas.length=0; analistas.push(...row.valor);}
-    });
-
-    // Reconstruir canteiros a partir das amostras plantadas
-    canteiros = Array.from({length:N_CANTEIROS},()=>Array(VAGAS_POR_CANTEIRO).fill(null));
-    plantados.forEach(item => {
-      if (item.canteiroIdx>=0 && item.vagaIdx>=0 && item.teste==='Emergência em Canteiro') {
-        canteiros[item.canteiroIdx][item.vagaIdx] = {
-          id:item.id, proto:item.proto, fin:item.fin, cultivar:item.cultivar,
-          plantadoEm:item.plantadoEm, leituras:item.leituras,
-          leiturasRealizadas:item.leiturasRealizadas, analista:item.analista,
-        };
-      }
-    });
-
-    console.log('[DB v2] pendentes:',pendentes.length,'plantados:',plantados.length,'hist:',historico.length);
-    _renderAll(); atualizarSelectsAnalistas(); _conectarRTv2();
-  } catch(e) { console.error('[DB v2] Erro:', e); _renderAll(); }
-}
-
-function _renderAll() {
-  renderFazer(); renderAnalise(); renderHist(); renderCanteiros(); renderRastreamento();
-}
-
-async function dbInserirAmostra(item, status) {
-  const sb=_initSB(); if(!sb) return;
-  const {error}=await sb.from('las_amostras').upsert(_itemToRow(item,status));
-  if(error) console.error('[DB] inserir:', error.message);
-}
-
-async function dbAtualizarAmostra(id, campos) {
-  const sb=_initSB(); if(!sb) return;
-  campos.updated_at=new Date().toISOString();
-  const {error}=await sb.from('las_amostras').update(campos).eq('id',id);
-  if(error) console.error('[DB] atualizar:', error.message, id, campos);
-}
-
-async function dbSalvarConfig(chave, valor) {
-  const sb=_initSB(); if(!sb) return;
-  const {error}=await sb.from('las_config').upsert({chave,valor,updated_at:new Date().toISOString()});
-  if(error) console.error('[DB] config:', error.message);
-}
-
-let _rtChV2 = null;
-function _conectarRTv2() {
-  const sb=_initSB(); if(!sb) return;
-  if(_rtChV2){try{sb.removeChannel(_rtChV2);}catch(e){}}
-
-  _rtChV2 = sb.channel('las-v2-multi')
-    .on('postgres_changes',{event:'*',schema:'public',table:'las_amostras'}, _onAmostrasRT)
-    .on('postgres_changes',{event:'*',schema:'public',table:'las_config'},   _onConfigRT)
-    .subscribe(s=>console.log('[RT v2]',s));
-
-  document.addEventListener('visibilitychange', async () => {
-    if(document.visibilityState==='visible') await dbCarregar();
-  });
-}
-
-function _onAmostrasRT(payload) {
-  const {eventType,new:novo,old}=payload;
-  const id=(novo||old)?.id; if(!id) return;
-
-  [pendentes,preCondicionando,plantados,historico].forEach(lista=>{
-    const i=lista.findIndex(x=>x.id===id); if(i>=0) lista.splice(i,1);
-  });
-  canteiros.forEach(c=>{const i=c.findIndex(v=>v&&v.id===id);if(i>=0)c[i]=null;});
-
-  if(eventType!=='DELETE'&&novo){
-    const item=_rowToItem(novo);
-    if(novo.status==='pendente')             pendentes.push(item);
-    else if(novo.status==='preCondicionando') preCondicionando.push(item);
-    else if(novo.status==='plantado'){
-      plantados.push(item);
-      if(novo.canteiro_idx>=0&&novo.vaga_idx>=0){
-        canteiros[novo.canteiro_idx][novo.vaga_idx]={
-          id:novo.id,proto:novo.proto,fin:novo.fin,cultivar:novo.cultivar,
-          plantadoEm:novo.plantado_em,leituras:novo.leituras,
-          leiturasRealizadas:novo.leituras_realizadas,analista:novo.analista,
-        };
-      }
-    }
-    else if(novo.status==='historico'||novo.status==='cancelado'){
-      historico.unshift(item);
-      historico.sort((a,b)=>new Date(b.leituraEm||b.ts)-new Date(a.leituraEm||a.ts));
-    }
-  }
-  const modalAberto=document.querySelector('.overlay.open');
-  if(!modalAberto) _renderAll(); else _atualizarBadgesV2();
-}
-
-function _onConfigRT(payload) {
-  const {new:novo}=payload; if(!novo) return;
-  if(novo.chave==='cultivares'&&Array.isArray(novo.valor)){CULTIVARES.length=0;CULTIVARES.push(...novo.valor);}
-  if(novo.chave==='especies'  &&Array.isArray(novo.valor)){ESPECIES.length=0;  ESPECIES.push(...novo.valor);}
-  if(novo.chave==='analistas' &&Array.isArray(novo.valor)){analistas.length=0; analistas.push(...novo.valor);atualizarSelectsAnalistas();}
-}
-
-function _atualizarBadgesV2() {
-  const bF=document.getElementById('b-fazer'),bA=document.getElementById('b-analise'),bC=document.getElementById('b-cant');
-  if(bF){const n=pendentes.length+preCondicionando.length;bF.textContent=n;bF.classList.toggle('off',n===0);}
-  if(bA){const n=plantados.length;bA.textContent=n;bA.classList.toggle('off',n===0);}
-  const tot=canteiros.reduce((s,c)=>s+c.filter(v=>v!==null).length,0);
-  if(bC){bC.textContent=tot;bC.classList.toggle('off',tot===0);}
-}
-
-// ── Sobrescrever funções críticas ────────────────────────────
-
-registrar = function() {
-  const proto=document.getElementById('e-proto').value.trim();
-  const precisaEA=sTestes.has('Envelhecimento Acelerado');
-  if(!proto||!sFin||!sTestes.size||(precisaEA&&!sEA)) return;
-  const n=sTestes.size;
-  const chkQDEl=document.getElementById('chk-qd');
-  const qdAtivo=!!(chkQDEl&&chkQDEl.checked)&&sTestes.has('Germinação');
-  [...sTestes].forEach(t=>{
-    const item={id:uid(),proto,fin:sFin,teste:t,ts:Date.now(),cultivar:sCultivar||'',
-      especie:sEspecie||'',eaPeriodo:t==='Envelhecimento Acelerado'?sEA:'',
-      qdAtivo:(qdAtivo&&t==='Germinação')===true};
-    pendentes.push(item);
-    dbInserirAmostra(item,'pendente');
-  });
-  document.getElementById('e-proto').value='';
-  sFin='';sTestes=new Set();sEA='';sQD=false;sEspecie='';sEspecieTemp='';
-  document.querySelectorAll('.fin-btn').forEach(b=>b.classList.remove('on'));
-  document.querySelectorAll('.teste-btn').forEach(b=>b.classList.remove('on'));
-  sCultivar='';sCultivarTemp='';
-  var cb=document.getElementById('cult-select-btn'),cl=document.getElementById('cult-select-label');
-  if(cb)cb.classList.remove('selected');if(cl)cl.textContent='— Selecionar cultivar —';
-  var eb=document.getElementById('esp-select-btn'),el=document.getElementById('esp-select-label');
-  if(eb)eb.classList.remove('selected');if(el)el.textContent='— Selecionar espécie —';
-  var chkQD=document.getElementById('chk-qd');if(chkQD)chkQD.checked=false;
-  var blocoQD=document.getElementById('bloco-qd');if(blocoQD)blocoQD.style.display='none';
-  document.querySelectorAll('#ea-grid .fin-btn').forEach(b=>b.classList.remove('on'));
-  const blocoEA=document.getElementById('bloco-ea');if(blocoEA)blocoEA.style.display='none';
-  atualizarPreview();atualizar();
-  toast('Entrada registrada · '+n+' teste'+(n>1?'s':'')+' gerado'+(n>1?'s':''),'ok');
-  const btn=document.getElementById('btn-reg');
-  btn.textContent='✓ Registrado';setTimeout(()=>{btn.textContent='Registrar Entrada';},1800);
-};
-
-iniciarPreCond = function(){
-  if(!selFazer.size){toast('Selecione ao menos uma amostra','err');return;}
-  const analista=document.getElementById('mf-analista')?.value||'';
-  if(!analista){toast('Selecione um analista antes de continuar','err');document.getElementById('mf-analista')?.focus();return;}
-  const agora=new Date();let nTZ=0,nEA=0;
-  selFazer.forEach(id=>{
-    const idx=pendentes.findIndex(t=>t.id===id);if(idx===-1)return;
-    const item=pendentes.splice(idx,1)[0];
-    if(item.teste==='Tetrazólio'){nTZ++;_criarPlantado(item,agora,analista);}
-    else{
-      nEA++;
-      const p=item.eaPeriodo&&EA_PERIODOS[item.eaPeriodo]?EA_PERIODOS[item.eaPeriodo]:EA_PERIODOS['48h'];
-      const dataPlantio=addDias(agora,p.preCondicao);
-      const diasPlantio=DIAS_TESTE[item.teste].leituras[0].dias;
-      const leituraLabel=`Leitura — ${p.label} (${p.preCondicao}d pré + 5d plantio = ${p.total}d)`;
-      const novoItem={...item,preCondInicioEm:agora.toISOString(),preCondDias:p.preCondicao,
-        dataPlantio:dataPlantio.toISOString(),analista:analista||'',
-        leituras:[{label:leituraLabel,dias:diasPlantio,dataISO:addDias(dataPlantio,diasPlantio).toISOString()}]};
-      preCondicionando.push(novoItem);
-      dbAtualizarAmostra(item.id,{status:'preCondicionando',analista,
-        pre_cond_inicio_em:agora.toISOString(),data_plantio:dataPlantio.toISOString(),
-        leituras:novoItem.leituras});
-    }
-  });
-  fecharM('modal-fazer');atualizar();
-  if(nTZ>0)toast(nTZ+' Tetrazólio(s) → Ag. Leitura!','ok');
-  if(nEA>0)toast(nEA+' EA(s) em pré-condicionamento','warn');
-};
-
-plantar = function(){
-  if(!selFazer.size){toast('Selecione ao menos uma amostra','err');return;}
-  const analista=document.getElementById('mf-analista')?.value||'';
-  if(!analista){toast('Selecione um analista antes de continuar','err');document.getElementById('mf-analista')?.focus();return;}
-  const agora=new Date();
-  selFazer.forEach(id=>{
-    const idx=pendentes.findIndex(t=>t.id===id);if(idx===-1)return;
-    const item=pendentes.splice(idx,1)[0];
-    _criarPlantado(item,agora,analista);
-  });
-  const n=selFazer.size;fecharM('modal-fazer');atualizar();
-  toast(n+' amostra'+(n>1?'s':'')+' plantada'+(n>1?'s':'')+(analista?' por '+analista:''),'ok');
-};
-
-plantarEA = function(id){
-  const idx=preCondicionando.findIndex(t=>t.id===id);if(idx===-1)return;
-  const item=preCondicionando.splice(idx,1)[0];
-  const analista=document.getElementById('ma-analista')?.value||item.analista||'';
-  if(!analista){preCondicionando.splice(idx,0,item);toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
-  _criarPlantado(item,new Date(),analista,true);
-  atualizar();
-  toast('PROT. '+item.proto+' plantado!','ok');
-};
-
-_criarPlantado = function(item,dataPlantio,analista,isPosPrecond=false){
-  let leituras;
-  const temQD=(item.qdAtivo===true)&&item.teste==='Germinação'&&!isPosPrecond;
-  if(temQD){
-    const dQD=addDias(dataPlantio,7),dL=addDias(dataPlantio,12);
-    leituras=[
-      {label:'⚙ QD — Quebra de Dormência (7 dias)',dias:7,dataISO:dQD.toISOString(),tipoQD:true},
-      {label:'Leitura Germinação (5 dias após QD)',dias:12,dataISO:dL.toISOString(),tipoQD:false},
-    ];
-  } else {
-    leituras=DIAS_TESTE[item.teste].leituras.map(l=>({label:l.label,dias:l.dias,dataISO:addDias(dataPlantio,l.dias).toISOString()}));
-  }
-  let canteiroIdx=-1,vagaIdx=-1;
-  if(item.teste==='Emergência em Canteiro'){
-    for(let c=0;c<N_CANTEIROS;c++){const v=canteiros[c].findIndex(x=>x===null);if(v>=0){canteiroIdx=c;vagaIdx=v;break;}}
-  }
-  const novoItem={...item,plantadoEm:dataPlantio.toISOString(),leituras,
-    analista:analista||item.analista||'',leiturasRealizadas:[],canteiroIdx,vagaIdx};
-  plantados.push(novoItem);
-  if(item.teste==='Emergência em Canteiro'&&canteiroIdx>=0){
-    canteiros[canteiroIdx][vagaIdx]={id:novoItem.id,proto:novoItem.proto,fin:novoItem.fin,
-      cultivar:novoItem.cultivar,plantadoEm:novoItem.plantadoEm,leituras:novoItem.leituras,
-      leiturasRealizadas:[],analista:novoItem.analista};
-    toast('🌿 PROT. '+novoItem.proto+' → Canteiro '+(canteiroIdx+1)+' · Vaga '+(vagaIdx+1),'ok');
-  } else if(item.teste==='Emergência em Canteiro'){
-    toast('⚠ Todos os canteiros estão lotados!','err');
-  }
-  dbAtualizarAmostra(item.id,{status:'plantado',plantado_em:dataPlantio.toISOString(),
-    analista:analista||item.analista||'',leituras:novoItem.leituras,
-    leituras_realizadas:[],canteiro_idx:canteiroIdx,vaga_idx:vagaIdx});
-};
-
-concluirDireto = function(){
-  if(!selDireto.size){toast('Selecione ao menos uma amostra','err');return;}
-  const analista=document.getElementById('mf-analista')?.value||'';
-  if(!analista){toast('Selecione um analista','err');document.getElementById('mf-analista')?.focus();return;}
-  const agora=new Date().toISOString();
-  selDireto.forEach(id=>{
-    const idx=pendentes.findIndex(t=>t.id===id);if(idx===-1)return;
-    const item=pendentes.splice(idx,1)[0];
-    historico.unshift({...item,plantadoEm:agora,leituras:[],leituraEm:agora,analistaLeitura:analista});
-    dbAtualizarAmostra(item.id,{status:'historico',leitura_em:agora,analista_leitura:analista,plantado_em:agora});
-  });
-  const n=selDireto.size;fecharM('modal-fazer');atualizar();
-  toast(n+' teste'+(n>1?'s':'')+' concluído'+(n>1?'s':'')+(analista?' por '+analista:''),'ok');
-};
-
-realizarLeitura = function(){
-  if(!selAnalise.size){toast('Selecione ao menos uma amostra','err');return;}
-  const analista=document.getElementById('ma-analista')?.value||'';
-  if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
-  const agora=new Date().toISOString();
-  let concluidos=0,qdReg=0;
-  selAnalise.forEach(id=>{
-    const idx=plantados.findIndex(t=>t.id===id);if(idx===-1)return;
-    const item=plantados[idx];
-    if(item.qdAtivo){
-      const real=item.leiturasRealizadas||[];
-      const proxIdx=item.leituras.findIndex((_,li)=>!real.includes(li));
-      if(proxIdx===-1)return;
-      if(item.leituras[proxIdx].tipoQD){
-        item.leiturasRealizadas=[...real,proxIdx];item.analistaLeitura=analista;
-        plantados[idx]={...item};qdReg++;
-        dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
-        return;
-      }
-    }
-    const concluido={...plantados.splice(idx,1)[0],leituraEm:agora,analistaLeitura:analista};
-    historico.unshift(concluido);
-    historico.sort((a,b)=>new Date(b.leituraEm||b.ts)-new Date(a.leituraEm||a.ts));
-    concluidos++;
-    dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista});
-  });
-  fecharM('modal-analise');atualizar();
-  if(qdReg>0&&concluidos===0)toast('⚙ QD registrada em '+qdReg+' amostra'+(qdReg>1?'s':''),'ok');
-  else if(concluidos>0)toast(concluidos+' leitura'+(concluidos>1?'s':'')+' realizada'+(concluidos>1?'s':'')+(analista?' por '+analista:''),'ok');
-};
-
-fazerLeituraCanteiro = function(id,leituraIdx){
-  const item=plantados.find(t=>t.id===id);if(!item)return;
-  if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
-  if(item.leiturasRealizadas.includes(leituraIdx)){toast('Esta leitura já foi registrada','warn');return;}
-  const analista=document.getElementById('ma-analista')?.value||'';
-  if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
-  item.leiturasRealizadas.push(leituraIdx);
-  if(leituraIdx===1){
-    const idx2=plantados.findIndex(t=>t.id===id);
-    if(idx2>-1){
-      const c=plantados.splice(idx2,1)[0];
-      historico.unshift({...c,leituraEm:new Date().toISOString(),analistaLeitura:analista});
-      liberarCanteiro(id);
-      dbAtualizarAmostra(id,{status:'historico',leitura_em:new Date().toISOString(),
-        analista_leitura:analista,leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});
-      fecharM('modal-analise');atualizar();
-      toast('PROT. '+item.proto+' — 2ª leitura realizada · vaga liberada!','ok');return;
-    }
-  }
-  dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
-  fecharM('modal-analise');atualizar();
-  toast('PROT. '+item.proto+' — 1ª leitura registrada · aguardando 2ª','ok');
-};
-
-executarLeituraEmMassa = async function(){
-  const modal=document.getElementById('modal-leitura-massa');
-  const analista=document.getElementById('analista-massa')?.value||'';
-  if(!analista){toast('Selecione um analista','err');return;}
-  const sel=[...modal.querySelectorAll('.chk-massa:checked')];
-  if(!sel.length){toast('Selecione ao menos uma leitura','warn');return;}
-  const agora=new Date().toISOString();let feitas=0,conc=0;
-  sel.forEach(chk=>{
-    const id=chk.dataset.id,leitIdx=parseInt(chk.dataset.leit);
-    const item=plantados.find(p=>p.id===id);if(!item)return;
-    if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
-    if(item.leiturasRealizadas.includes(leitIdx))return;
-    item.leiturasRealizadas.push(leitIdx);item.analistaLeitura=analista;feitas++;
-    if(leitIdx===1){
-      const i2=plantados.findIndex(p=>p.id===id);
-      if(i2>-1){
-        const c=plantados.splice(i2,1)[0];
-        historico.unshift({...c,leituraEm:agora,analistaLeitura:analista});
-        liberarCanteiro(id);
-        dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista,
-          leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});
-        conc++;
-      }
-    } else {
-      dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
-    }
-  });
-  modal.remove();atualizar();
-  toast('✓ '+feitas+' leitura'+(feitas!==1?'s':'')+' por '+analista+(conc?' · '+conc+' concluído'+(conc!==1?'s':''):''),'ok');
-};
-
-realizarLeituraCanteiroemMassa = async function(){
-  const analista=document.getElementById('ma-analista')?.value||'';
-  if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
-  const checks=[...document.querySelectorAll('.chk-cant-massa:checked')];
-  if(!checks.length){toast('Selecione ao menos um protocolo','warn');return;}
-  const agora=new Date().toISOString();let feitas=0,conc=0;
-  checks.forEach(chk=>{
-    const id=chk.dataset.id,leitIdx=parseInt(chk.dataset.leit);
-    const item=plantados.find(p=>p.id===id);if(!item)return;
-    if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
-    if(item.leiturasRealizadas.includes(leitIdx))return;
-    item.leiturasRealizadas.push(leitIdx);item.analistaLeitura=analista;feitas++;
-    if(leitIdx===1){
-      const i2=plantados.findIndex(p=>p.id===id);
-      if(i2>-1){
-        const c=plantados.splice(i2,1)[0];
-        historico.unshift({...c,leituraEm:agora,analistaLeitura:analista});
-        liberarCanteiro(id);
-        dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista,
-          leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});
-        conc++;
-      }
-    } else {
-      dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
-    }
-  });
-  fecharM('modal-analise');atualizar();
-  toast('✓ '+feitas+' leitura'+(feitas!==1?'s':'')+(conc?' · '+conc+' concluído'+(conc!==1?'s':''):''),'ok');
-};
-
-executarCancelar = function(modalOrigem){
-  const inp=document.getElementById('inp-senha-cancelar'),msg=document.getElementById('msg-senha-cancelar');
-  if((inp?inp.value:'')!==SENHA_CANCELAR){
-    if(inp){inp.value='';inp.focus();inp.style.borderColor='#ff3b3b';}
-    if(msg)msg.style.display='block';toast('Senha incorreta!','err');return;
-  }
-  let ids=modalOrigem==='modal-fazer'?[...selFazer,...selDireto]:[...selAnalise];
-  const agora=new Date().toISOString();let cancelados=0;
-  ids.forEach(id=>{
-    let idx=pendentes.findIndex(p=>p.id===id);
-    if(idx>=0){const item=pendentes.splice(idx,1)[0];historico.unshift({...item,cancelado:true,leituraEm:agora,analistaLeitura:''});dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora});cancelados++;return;}
-    idx=preCondicionando.findIndex(p=>p.id===id);
-    if(idx>=0){const item=preCondicionando.splice(idx,1)[0];historico.unshift({...item,cancelado:true,leituraEm:agora,analistaLeitura:''});dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora});cancelados++;return;}
-    idx=plantados.findIndex(p=>p.id===id);
-    if(idx>=0){const item=plantados.splice(idx,1)[0];canteiros.forEach(c=>{const vi=c.findIndex(v=>v&&v.id===id);if(vi>=0)c[vi]=null;});historico.unshift({...item,cancelado:true,leituraEm:agora,analistaLeitura:''});dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora,canteiro_idx:-1,vaga_idx:-1});cancelados++;return;}
-  });
-  document.getElementById('modal-confirmar-cancelar').remove();
-  fecharM(modalOrigem);
-  toast(cancelados>0?'✕ '+cancelados+' teste'+(cancelados>1?'s':'')+' cancelado'+(cancelados>1?'s':''):'Nenhum teste encontrado',cancelados>0?'warn':'err');
-  atualizar();
-};
-
-salvarNovaEspecie = function(){
-  const nome=document.getElementById('new-esp-nome').value.trim().toUpperCase();
-  if(!nome){toast('Informe o nome da espécie','err');return;}
-  if(ESPECIES.find(e=>e.nome===nome)){toast('Espécie já cadastrada','warn');return;}
-  const qd=document.getElementById('new-esp-qd').checked;
-  ESPECIES.push({nome,qdHabilitada:qd});ESPECIES.sort((a,b)=>a.nome.localeCompare(b.nome));
-  fecharM('modal-esp-new');toast('Espécie "'+nome+'" adicionada!'+(qd?' (QD habilitada)':''),'ok');
-  dbSalvarConfig('especies',ESPECIES);
-};
-
-salvarNovaCultivar = function(){
-  var nome=document.getElementById('new-cult-nome').value.trim().toUpperCase();
-  if(!nome){toast('Informe o nome da cultivar','err');return;}
-  if(CULTIVARES.indexOf(nome)>=0){toast('Cultivar já cadastrada','warn');return;}
-  CULTIVARES.push(nome);CULTIVARES.sort();
-  fecharM('modal-cult-new');toast('Cultivar "'+nome+'" adicionada!','ok');
-  dbSalvarConfig('cultivares',CULTIVARES);
-};
-
-adicionarAnalista = function(){
-  const inp=document.getElementById('novo-analista'),nome=inp.value.trim();
-  if(!nome)return;
-  if(analistas.includes(nome)){toast('Analista já cadastrado','warn');return;}
-  analistas.push(nome);inp.value='';
-  renderListaAnalistas();toast(nome+' adicionado!','ok');
-  dbSalvarConfig('analistas',analistas);
-};
-
-removerAnalista = function(i){
-  analistas.splice(i,1);renderListaAnalistas();
-  dbSalvarConfig('analistas',analistas);
-};
-
-toggleQDEspecie = function(nome){
-  const esp=ESPECIES.find(e=>e.nome===nome);if(!esp)return;
-  esp.qdHabilitada=!esp.qdHabilitada;
-  renderEspList(document.getElementById('esp-search')?.value||'');
-  toast((esp.qdHabilitada?'⚙ QD habilitada para ':'QD desabilitada para ')+nome,esp.qdHabilitada?'ok':'warn');
-  dbSalvarConfig('especies',ESPECIES);
-};
-
-confirmarZerar = function(){
-  const inp=document.getElementById('inp-senha-reset'),msg=document.getElementById('msg-senha-reset');
-  if((inp?inp.value:'')!==SENHA_RESET){
-    if(inp){inp.value='';inp.focus();inp.style.borderColor='#ff3b3b';}
-    if(msg)msg.style.display='block';toast('Senha incorreta!','err');return;
-  }
-  pendentes.length=0;preCondicionando.length=0;plantados.length=0;historico.length=0;
-  canteiros=Array.from({length:N_CANTEIROS},()=>Array(VAGAS_POR_CANTEIRO).fill(null));
-  const sb=_initSB();
-  if(sb){
-    sb.from('las_amostras').delete().neq('id','__none__').then(({error})=>{if(error)console.error(error.message);});
-    sb.from('las_config').delete().neq('chave','__none__').then(()=>{});
-  }
-  const modal=document.getElementById('modal-zerar');if(modal)modal.remove();
-  toast('✓ Sistema zerado!','ok');atualizar();atualizarSelectsAnalistas();
-};
-
-confirmarRestaurar = async function(backupId){
-  if(!confirm('Restaurar este backup? Os dados atuais serão substituídos.'))return;
-  const sb=_initSB();
-  try{
-    const {data}=await sb.from('las_backups').select('estado').eq('id',backupId).single();
-    if(!data){toast('Backup não encontrado','err');return;}
-    document.getElementById('modal-backups')?.remove();
-    toast('Restaurando... aguarde','warn');
-    const est=data.estado;
-    await sb.from('las_amostras').delete().neq('id','__none__');
-    const toInsert=[];
-    const addRows=(arr,status)=>(arr||[]).forEach(item=>{
-      toInsert.push({id:item.id,proto:item.proto,fin:item.fin||'',teste:item.teste,
-        cultivar:item.cultivar||'',especie:item.especie||'',ea_periodo:item.eaPeriodo||'',
-        qd_ativo:item.qdAtivo||false,status:item.cancelado?'cancelado':status,
-        ts:item.ts||Date.now(),plantado_em:item.plantadoEm||null,leitura_em:item.leituraEm||null,
-        analista:item.analista||'',analista_leitura:item.analistaLeitura||'',
-        leituras:item.leituras||[],leituras_realizadas:item.leiturasRealizadas||[],
-        reteste:item.reteste||false,num_reteste:item.numReteste||0,cancelado:item.cancelado||false,
-        canteiro_idx:item.canteiroIdx??-1,vaga_idx:item.vagaIdx??-1,
-        updated_at:new Date().toISOString()});
-    });
-    addRows(est.pendentes,'pendente');addRows(est.preCondicionando,'preCondicionando');
-    addRows(est.plantados,'plantado');addRows(est.historico,'historico');
-    for(let i=0;i<toInsert.length;i+=100){
-      const {error}=await sb.from('las_amostras').insert(toInsert.slice(i,i+100));
-      if(error)console.error('[RESTAURAR]',error.message);
-    }
-    if(est.CULTIVARES)await sb.from('las_config').upsert({chave:'cultivares',valor:est.CULTIVARES,updated_at:new Date().toISOString()});
-    if(est.ESPECIES)  await sb.from('las_config').upsert({chave:'especies',  valor:est.ESPECIES,  updated_at:new Date().toISOString()});
-    if(est.analistas) await sb.from('las_config').upsert({chave:'analistas', valor:est.analistas, updated_at:new Date().toISOString()});
-    toast('✓ Backup restaurado! Recarregando...','ok');
-    setTimeout(()=>location.reload(),1500);
-  }catch(e){toast('Erro ao restaurar: '+e.message,'err');}
-};
-
-executarReteste = function(proto,teste){
-  const motivo=document.getElementById('inp-motivo-reteste')?.value?.trim()||'';
-  const itemOriginal=historico.find(h=>h.proto===proto&&h.teste===teste&&!h.cancelado);
-  if(!itemOriginal){toast('Item não encontrado','err');return;}
-  const numReteste=historico.filter(h=>h.proto===proto&&h.teste===teste&&h.reteste).length+1;
-  const novoItem={id:uid(),proto:itemOriginal.proto,fin:itemOriginal.fin,teste:itemOriginal.teste,
-    ts:Date.now(),cultivar:itemOriginal.cultivar||'',especie:itemOriginal.especie||'',
-    eaPeriodo:itemOriginal.eaPeriodo||'',qdAtivo:itemOriginal.qdAtivo||false,
-    reteste:true,numReteste,motivoReteste:motivo,idOriginal:itemOriginal.id};
-  pendentes.unshift(novoItem);
-  dbInserirAmostra(novoItem,'pendente');
-  document.getElementById('modal-reteste')?.remove();
-  toast('↩ Reteste '+numReteste+' de '+proto+' — '+teste+' enviado para A Fazer','ok');
-  atualizar();
-};
-
-atualizar = function(){renderFazer();renderAnalise();renderHist();renderCanteiros();renderRastreamento();};
-
-// ── Reinicializar com nova arquitetura ───────────────────────
-(async function reinicializar() {
-  console.log('[PATCH v2] Inicializando nova arquitetura...');
+// Aguarda o DOM carregar completamente antes de aplicar
+window.addEventListener('load', function() {
   // Para o realtime antigo
-  if(typeof _rtCh!=='undefined'&&_rtCh){
-    const sb=_initSB();if(sb)try{sb.removeChannel(_rtCh);}catch(e){}
+  try { if(window._sb && window._rtCh) window._sb.removeChannel(window._rtCh); } catch(e){}
+
+  // ── Funções do novo banco ──────────────────────────────
+
+  window.dbInserirAmostra = async function(item, status) {
+    const sb = window._initSB(); if(!sb) return;
+    const row = {
+      id:item.id, proto:item.proto, fin:item.fin||'', teste:item.teste,
+      cultivar:item.cultivar||'', especie:item.especie||'',
+      ea_periodo:item.eaPeriodo||'', qd_ativo:item.qdAtivo||false,
+      status, ts:item.ts||Date.now(),
+      plantado_em:item.plantadoEm||null, leitura_em:item.leituraEm||null,
+      analista:item.analista||'', analista_leitura:item.analistaLeitura||'',
+      leituras:item.leituras||[], leituras_realizadas:item.leiturasRealizadas||[],
+      reteste:item.reteste||false, num_reteste:item.numReteste||0,
+      cancelado:item.cancelado||false,
+      canteiro_idx:item.canteiroIdx??-1, vaga_idx:item.vagaIdx??-1,
+      pre_cond_inicio_em:item.preCondInicioEm||null,
+      data_plantio:item.dataPlantio||null,
+      updated_at:new Date().toISOString(),
+    };
+    const {error} = await sb.from('las_amostras').upsert(row);
+    if(error) console.error('[DB v3] inserir:', error.message);
+    else console.log('[DB v3] inserido:', item.proto, item.teste, status);
+  };
+
+  window.dbAtualizarAmostra = async function(id, campos) {
+    const sb = window._initSB(); if(!sb) return;
+    campos.updated_at = new Date().toISOString();
+    const {error} = await sb.from('las_amostras').update(campos).eq('id', id);
+    if(error) console.error('[DB v3] atualizar:', error.message);
+    else console.log('[DB v3] atualizado:', id, Object.keys(campos));
+  };
+
+  window.dbSalvarConfig = async function(chave, valor) {
+    const sb = window._initSB(); if(!sb) return;
+    const {error} = await sb.from('las_config').upsert({chave, valor, updated_at: new Date().toISOString()});
+    if(error) console.error('[DB v3] config:', error.message);
+  };
+
+  // ── Realtime v3 ──────────────────────────────────────
+  function _rowToItemV3(row) {
+    return {
+      id:row.id, proto:row.proto, fin:row.fin, teste:row.teste,
+      cultivar:row.cultivar||'', especie:row.especie||'',
+      eaPeriodo:row.ea_periodo||'', qdAtivo:row.qd_ativo||false,
+      ts:row.ts, plantadoEm:row.plantado_em, leituraEm:row.leitura_em,
+      analista:row.analista||'', analistaLeitura:row.analista_leitura||'',
+      leituras:row.leituras||[], leiturasRealizadas:row.leituras_realizadas||[],
+      reteste:row.reteste||false, numReteste:row.num_reteste||0,
+      cancelado:row.cancelado||false,
+      canteiroIdx:row.canteiro_idx, vagaIdx:row.vaga_idx,
+    };
   }
-  // Carrega do novo banco
-  await dbCarregar();
-  console.log('[PATCH v2] Pronto!');
-})();
+
+  const sb = window._initSB();
+  if(sb) {
+    const ch = sb.channel('las-v3-rt')
+      .on('postgres_changes', {event:'*', schema:'public', table:'las_amostras'}, function(payload) {
+        const {eventType, new:novo, old} = payload;
+        const id = (novo||old)?.id; if(!id) return;
+
+        // Remove das listas
+        [window.pendentes, window.preCondicionando, window.plantados, window.historico].forEach(function(lista) {
+          if(!lista) return;
+          const i = lista.findIndex(function(x){return x.id===id;});
+          if(i>=0) lista.splice(i,1);
+        });
+        // Remove do canteiro
+        if(window.canteiros) window.canteiros.forEach(function(c) {
+          const i = c.findIndex(function(v){return v&&v.id===id;});
+          if(i>=0) c[i]=null;
+        });
+
+        if(eventType!=='DELETE' && novo) {
+          const item = _rowToItemV3(novo);
+          if(novo.status==='pendente')             window.pendentes.push(item);
+          else if(novo.status==='preCondicionando') window.preCondicionando.push(item);
+          else if(novo.status==='plantado') {
+            window.plantados.push(item);
+            if(novo.canteiro_idx>=0 && novo.vaga_idx>=0 && window.canteiros) {
+              window.canteiros[novo.canteiro_idx][novo.vaga_idx] = {
+                id:novo.id, proto:novo.proto, fin:novo.fin, cultivar:novo.cultivar,
+                plantadoEm:novo.plantado_em, leituras:novo.leituras,
+                leiturasRealizadas:novo.leituras_realizadas, analista:novo.analista,
+              };
+            }
+          }
+          else if(novo.status==='historico'||novo.status==='cancelado') {
+            window.historico.unshift(item);
+            window.historico.sort(function(a,b){return new Date(b.leituraEm||b.ts)-new Date(a.leituraEm||a.ts);});
+          }
+        }
+
+        const modalAberto = document.querySelector('.overlay.open');
+        if(!modalAberto) {
+          renderFazer(); renderAnalise(); renderHist(); renderCanteiros(); renderRastreamento();
+        }
+        console.log('[RT v3] Atualizado:', novo?.status, id);
+      })
+      .on('postgres_changes', {event:'*', schema:'public', table:'las_config'}, function(payload) {
+        const novo = payload.new; if(!novo) return;
+        if(novo.chave==='analistas'&&Array.isArray(novo.valor)){window.analistas.length=0;window.analistas.push(...novo.valor);atualizarSelectsAnalistas();}
+        if(novo.chave==='cultivares'&&Array.isArray(novo.valor)){window.CULTIVARES.length=0;window.CULTIVARES.push(...novo.valor);}
+        if(novo.chave==='especies'  &&Array.isArray(novo.valor)){window.ESPECIES.length=0;  window.ESPECIES.push(...novo.valor);}
+        console.log('[RT v3] Config:', novo.chave);
+      })
+      .subscribe(function(s){ console.log('[RT v3] Status:', s); });
+    console.log('[PATCH v3] Realtime conectado!');
+  }
+
+  // ── Sobrescrever funções via window ──────────────────
+
+  window.registrar = function() {
+    const proto=document.getElementById('e-proto').value.trim();
+    const precisaEA=sTestes.has('Envelhecimento Acelerado');
+    if(!proto||!sFin||!sTestes.size||(precisaEA&&!sEA)) return;
+    const n=sTestes.size;
+    const chkQDEl=document.getElementById('chk-qd');
+    const qdAtivo=!!(chkQDEl&&chkQDEl.checked)&&sTestes.has('Germinação');
+    [...sTestes].forEach(function(t){
+      const item={id:uid(),proto,fin:sFin,teste:t,ts:Date.now(),cultivar:sCultivar||'',
+        especie:sEspecie||'',eaPeriodo:t==='Envelhecimento Acelerado'?sEA:'',
+        qdAtivo:(qdAtivo&&t==='Germinação')===true};
+      pendentes.push(item);
+      window.dbInserirAmostra(item,'pendente');
+    });
+    document.getElementById('e-proto').value='';
+    sFin='';sTestes=new Set();sEA='';sQD=false;sEspecie='';sEspecieTemp='';
+    document.querySelectorAll('.fin-btn').forEach(function(b){b.classList.remove('on');});
+    document.querySelectorAll('.teste-btn').forEach(function(b){b.classList.remove('on');});
+    sCultivar='';sCultivarTemp='';
+    var cb=document.getElementById('cult-select-btn'),cl=document.getElementById('cult-select-label');
+    if(cb)cb.classList.remove('selected');if(cl)cl.textContent='— Selecionar cultivar —';
+    var eb=document.getElementById('esp-select-btn'),el2=document.getElementById('esp-select-label');
+    if(eb)eb.classList.remove('selected');if(el2)el2.textContent='— Selecionar espécie —';
+    var chkQD=document.getElementById('chk-qd');if(chkQD)chkQD.checked=false;
+    var blocoQD=document.getElementById('bloco-qd');if(blocoQD)blocoQD.style.display='none';
+    document.querySelectorAll('#ea-grid .fin-btn').forEach(function(b){b.classList.remove('on');});
+    const blocoEA=document.getElementById('bloco-ea');if(blocoEA)blocoEA.style.display='none';
+    atualizarPreview();atualizar();
+    toast('Entrada registrada · '+n+' teste'+(n>1?'s':'')+' gerado'+(n>1?'s':''),'ok');
+    const btn=document.getElementById('btn-reg');
+    btn.textContent='✓ Registrado';setTimeout(function(){btn.textContent='Registrar Entrada';},1800);
+  };
+
+  window.iniciarPreCond = function(){
+    if(!selFazer.size){toast('Selecione ao menos uma amostra','err');return;}
+    const analista=document.getElementById('mf-analista')?.value||'';
+    if(!analista){toast('Selecione um analista antes de continuar','err');document.getElementById('mf-analista')?.focus();return;}
+    const agora=new Date();let nTZ=0,nEA=0;
+    selFazer.forEach(function(id){
+      const idx=pendentes.findIndex(function(t){return t.id===id;});if(idx===-1)return;
+      const item=pendentes.splice(idx,1)[0];
+      if(item.teste==='Tetrazólio'){nTZ++;_criarPlantado(item,agora,analista);}
+      else{
+        nEA++;
+        const p=item.eaPeriodo&&EA_PERIODOS[item.eaPeriodo]?EA_PERIODOS[item.eaPeriodo]:EA_PERIODOS['48h'];
+        const dataPlantio=addDias(agora,p.preCondicao);
+        const diasPlantio=DIAS_TESTE[item.teste].leituras[0].dias;
+        const leituraLabel='Leitura — '+p.label+' ('+p.preCondicao+'d pré + 5d plantio = '+p.total+'d)';
+        const novoItem=Object.assign({},item,{preCondInicioEm:agora.toISOString(),preCondDias:p.preCondicao,
+          dataPlantio:dataPlantio.toISOString(),analista:analista||'',
+          leituras:[{label:leituraLabel,dias:diasPlantio,dataISO:addDias(dataPlantio,diasPlantio).toISOString()}]});
+        preCondicionando.push(novoItem);
+        window.dbAtualizarAmostra(item.id,{status:'preCondicionando',analista,
+          pre_cond_inicio_em:agora.toISOString(),data_plantio:dataPlantio.toISOString(),
+          leituras:novoItem.leituras});
+      }
+    });
+    fecharM('modal-fazer');atualizar();
+    if(nTZ>0)toast(nTZ+' Tetrazólio(s) → Ag. Leitura!','ok');
+    if(nEA>0)toast(nEA+' EA(s) em pré-condicionamento','warn');
+  };
+
+  window.plantar = function(){
+    if(!selFazer.size){toast('Selecione ao menos uma amostra','err');return;}
+    const analista=document.getElementById('mf-analista')?.value||'';
+    if(!analista){toast('Selecione um analista antes de continuar','err');document.getElementById('mf-analista')?.focus();return;}
+    const agora=new Date();
+    selFazer.forEach(function(id){
+      const idx=pendentes.findIndex(function(t){return t.id===id;});if(idx===-1)return;
+      const item=pendentes.splice(idx,1)[0];
+      _criarPlantado(item,agora,analista);
+    });
+    const n=selFazer.size;fecharM('modal-fazer');atualizar();
+    toast(n+' amostra'+(n>1?'s':'')+' plantada'+(n>1?'s':'')+(analista?' por '+analista:''),'ok');
+  };
+
+  window.plantarEA = function(id){
+    const idx=preCondicionando.findIndex(function(t){return t.id===id;});if(idx===-1)return;
+    const item=preCondicionando.splice(idx,1)[0];
+    const analista=document.getElementById('ma-analista')?.value||item.analista||'';
+    if(!analista){preCondicionando.splice(idx,0,item);toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
+    _criarPlantado(item,new Date(),analista,true);atualizar();
+    toast('PROT. '+item.proto+' plantado!','ok');
+  };
+
+  window._criarPlantado = function(item,dataPlantio,analista,isPosPrecond){
+    isPosPrecond=isPosPrecond||false;
+    var leituras;
+    var temQD=(item.qdAtivo===true)&&item.teste==='Germinação'&&!isPosPrecond;
+    if(temQD){
+      var dQD=addDias(dataPlantio,7),dL=addDias(dataPlantio,12);
+      leituras=[
+        {label:'⚙ QD — Quebra de Dormência (7 dias)',dias:7,dataISO:dQD.toISOString(),tipoQD:true},
+        {label:'Leitura Germinação (5 dias após QD)',dias:12,dataISO:dL.toISOString(),tipoQD:false},
+      ];
+    } else {
+      leituras=DIAS_TESTE[item.teste].leituras.map(function(l){return {label:l.label,dias:l.dias,dataISO:addDias(dataPlantio,l.dias).toISOString()};});
+    }
+    var canteiroIdx=-1,vagaIdx=-1;
+    if(item.teste==='Emergência em Canteiro'){
+      for(var c=0;c<N_CANTEIROS;c++){var v=canteiros[c].findIndex(function(x){return x===null;});if(v>=0){canteiroIdx=c;vagaIdx=v;break;}}
+    }
+    var novoItem=Object.assign({},item,{plantadoEm:dataPlantio.toISOString(),leituras:leituras,
+      analista:analista||item.analista||'',leiturasRealizadas:[],canteiroIdx:canteiroIdx,vagaIdx:vagaIdx});
+    plantados.push(novoItem);
+    if(item.teste==='Emergência em Canteiro'&&canteiroIdx>=0){
+      canteiros[canteiroIdx][vagaIdx]={id:novoItem.id,proto:novoItem.proto,fin:novoItem.fin,
+        cultivar:novoItem.cultivar,plantadoEm:novoItem.plantadoEm,leituras:novoItem.leituras,
+        leiturasRealizadas:[],analista:novoItem.analista};
+      toast('🌿 PROT. '+novoItem.proto+' → Canteiro '+(canteiroIdx+1)+' · Vaga '+(vagaIdx+1),'ok');
+    } else if(item.teste==='Emergência em Canteiro'){
+      toast('⚠ Todos os canteiros estão lotados!','err');
+    }
+    window.dbAtualizarAmostra(item.id,{status:'plantado',plantado_em:dataPlantio.toISOString(),
+      analista:analista||item.analista||'',leituras:leituras,leituras_realizadas:[],
+      canteiro_idx:canteiroIdx,vaga_idx:vagaIdx});
+  };
+
+  window.concluirDireto = function(){
+    if(!selDireto.size){toast('Selecione ao menos uma amostra','err');return;}
+    const analista=document.getElementById('mf-analista')?.value||'';
+    if(!analista){toast('Selecione um analista','err');document.getElementById('mf-analista')?.focus();return;}
+    const agora=new Date().toISOString();
+    selDireto.forEach(function(id){
+      const idx=pendentes.findIndex(function(t){return t.id===id;});if(idx===-1)return;
+      const item=pendentes.splice(idx,1)[0];
+      historico.unshift(Object.assign({},item,{plantadoEm:agora,leituras:[],leituraEm:agora,analistaLeitura:analista}));
+      window.dbAtualizarAmostra(item.id,{status:'historico',leitura_em:agora,analista_leitura:analista,plantado_em:agora});
+    });
+    const n=selDireto.size;fecharM('modal-fazer');atualizar();
+    toast(n+' teste'+(n>1?'s':'')+' concluído'+(n>1?'s':'')+(analista?' por '+analista:''),'ok');
+  };
+
+  window.realizarLeitura = function(){
+    if(!selAnalise.size){toast('Selecione ao menos uma amostra','err');return;}
+    const analista=document.getElementById('ma-analista')?.value||'';
+    if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
+    const agora=new Date().toISOString();
+    let concluidos=0,qdReg=0;
+    selAnalise.forEach(function(id){
+      const idx=plantados.findIndex(function(t){return t.id===id;});if(idx===-1)return;
+      const item=plantados[idx];
+      if(item.qdAtivo){
+        const real=item.leiturasRealizadas||[];
+        const proxIdx=item.leituras.findIndex(function(_,li){return !real.includes(li);});
+        if(proxIdx===-1)return;
+        if(item.leituras[proxIdx].tipoQD){
+          item.leiturasRealizadas=[...real,proxIdx];item.analistaLeitura=analista;
+          plantados[idx]=Object.assign({},item);qdReg++;
+          window.dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
+          return;
+        }
+      }
+      const concluido=Object.assign({},plantados.splice(idx,1)[0],{leituraEm:agora,analistaLeitura:analista});
+      historico.unshift(concluido);
+      historico.sort(function(a,b){return new Date(b.leituraEm||b.ts)-new Date(a.leituraEm||a.ts);});
+      concluidos++;
+      window.dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista});
+    });
+    fecharM('modal-analise');atualizar();
+    if(qdReg>0&&concluidos===0)toast('⚙ QD registrada em '+qdReg+' amostra'+(qdReg>1?'s':''),'ok');
+    else if(concluidos>0)toast(concluidos+' leitura'+(concluidos>1?'s':'')+' realizada'+(concluidos>1?'s':'')+(analista?' por '+analista:''),'ok');
+  };
+
+  window.fazerLeituraCanteiro = function(id,leituraIdx){
+    const item=plantados.find(function(t){return t.id===id;});if(!item)return;
+    if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
+    if(item.leiturasRealizadas.includes(leituraIdx)){toast('Esta leitura já foi registrada','warn');return;}
+    const analista=document.getElementById('ma-analista')?.value||'';
+    if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
+    item.leiturasRealizadas.push(leituraIdx);
+    if(leituraIdx===1){
+      const idx2=plantados.findIndex(function(t){return t.id===id;});
+      if(idx2>-1){
+        const c=Object.assign({},plantados.splice(idx2,1)[0],{leituraEm:new Date().toISOString(),analistaLeitura:analista});
+        historico.unshift(c);liberarCanteiro(id);
+        window.dbAtualizarAmostra(id,{status:'historico',leitura_em:new Date().toISOString(),
+          analista_leitura:analista,leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});
+        fecharM('modal-analise');atualizar();
+        toast('PROT. '+item.proto+' — 2ª leitura · vaga liberada!','ok');return;
+      }
+    }
+    window.dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});
+    fecharM('modal-analise');atualizar();
+    toast('PROT. '+item.proto+' — 1ª leitura registrada','ok');
+  };
+
+  window.executarLeituraEmMassa = async function(){
+    const modal=document.getElementById('modal-leitura-massa');
+    const analista=document.getElementById('analista-massa')?.value||'';
+    if(!analista){toast('Selecione um analista','err');return;}
+    const sel=[...modal.querySelectorAll('.chk-massa:checked')];
+    if(!sel.length){toast('Selecione ao menos uma leitura','warn');return;}
+    const agora=new Date().toISOString();let feitas=0,conc=0;
+    sel.forEach(function(chk){
+      const id=chk.dataset.id,leitIdx=parseInt(chk.dataset.leit);
+      const item=plantados.find(function(p){return p.id===id;});if(!item)return;
+      if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
+      if(item.leiturasRealizadas.includes(leitIdx))return;
+      item.leiturasRealizadas.push(leitIdx);item.analistaLeitura=analista;feitas++;
+      if(leitIdx===1){
+        const i2=plantados.findIndex(function(p){return p.id===id;});
+        if(i2>-1){const c=Object.assign({},plantados.splice(i2,1)[0],{leituraEm:agora,analistaLeitura:analista});historico.unshift(c);liberarCanteiro(id);
+          window.dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista,leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});conc++;}
+      } else {window.dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});}
+    });
+    modal.remove();atualizar();
+    toast('✓ '+feitas+' leitura'+(feitas!==1?'s':'')+' por '+analista+(conc?' · '+conc+' concluído'+(conc!==1?'s':''):''),'ok');
+  };
+
+  window.realizarLeituraCanteiroemMassa = async function(){
+    const analista=document.getElementById('ma-analista')?.value||'';
+    if(!analista){toast('Selecione um analista','err');document.getElementById('ma-analista')?.focus();return;}
+    const checks=[...document.querySelectorAll('.chk-cant-massa:checked')];
+    if(!checks.length){toast('Selecione ao menos um protocolo','warn');return;}
+    const agora=new Date().toISOString();let feitas=0,conc=0;
+    checks.forEach(function(chk){
+      const id=chk.dataset.id,leitIdx=parseInt(chk.dataset.leit);
+      const item=plantados.find(function(p){return p.id===id;});if(!item)return;
+      if(!item.leiturasRealizadas)item.leiturasRealizadas=[];
+      if(item.leiturasRealizadas.includes(leitIdx))return;
+      item.leiturasRealizadas.push(leitIdx);item.analistaLeitura=analista;feitas++;
+      if(leitIdx===1){
+        const i2=plantados.findIndex(function(p){return p.id===id;});
+        if(i2>-1){const c=Object.assign({},plantados.splice(i2,1)[0],{leituraEm:agora,analistaLeitura:analista});historico.unshift(c);liberarCanteiro(id);
+          window.dbAtualizarAmostra(id,{status:'historico',leitura_em:agora,analista_leitura:analista,leituras_realizadas:item.leiturasRealizadas,canteiro_idx:-1,vaga_idx:-1});conc++;}
+      } else {window.dbAtualizarAmostra(id,{leituras_realizadas:item.leiturasRealizadas,analista_leitura:analista});}
+    });
+    fecharM('modal-analise');atualizar();
+    toast('✓ '+feitas+' leitura'+(feitas!==1?'s':'')+(conc?' · '+conc+' concluído'+(conc!==1?'s':''):''),'ok');
+  };
+
+  window.executarCancelar = function(modalOrigem){
+    const inp=document.getElementById('inp-senha-cancelar');
+    if((inp?inp.value:'')!==SENHA_CANCELAR){
+      if(inp){inp.value='';inp.focus();inp.style.borderColor='#ff3b3b';}
+      const msg=document.getElementById('msg-senha-cancelar');if(msg)msg.style.display='block';
+      toast('Senha incorreta!','err');return;
+    }
+    let ids=modalOrigem==='modal-fazer'?[...selFazer,...selDireto]:[...selAnalise];
+    const agora=new Date().toISOString();let cancelados=0;
+    ids.forEach(function(id){
+      let idx=pendentes.findIndex(function(p){return p.id===id;});
+      if(idx>=0){const item=pendentes.splice(idx,1)[0];historico.unshift(Object.assign({},item,{cancelado:true,leituraEm:agora,analistaLeitura:''}));window.dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora});cancelados++;return;}
+      idx=preCondicionando.findIndex(function(p){return p.id===id;});
+      if(idx>=0){const item=preCondicionando.splice(idx,1)[0];historico.unshift(Object.assign({},item,{cancelado:true,leituraEm:agora,analistaLeitura:''}));window.dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora});cancelados++;return;}
+      idx=plantados.findIndex(function(p){return p.id===id;});
+      if(idx>=0){const item=plantados.splice(idx,1)[0];canteiros.forEach(function(c){const vi=c.findIndex(function(v){return v&&v.id===id;});if(vi>=0)c[vi]=null;});historico.unshift(Object.assign({},item,{cancelado:true,leituraEm:agora,analistaLeitura:''}));window.dbAtualizarAmostra(id,{status:'cancelado',cancelado:true,leitura_em:agora,canteiro_idx:-1,vaga_idx:-1});cancelados++;return;}
+    });
+    document.getElementById('modal-confirmar-cancelar').remove();fecharM(modalOrigem);
+    toast(cancelados>0?'✕ '+cancelados+' teste'+(cancelados>1?'s':'')+' cancelado'+(cancelados>1?'s':''):'Nenhum teste encontrado',cancelados>0?'warn':'err');
+    atualizar();
+  };
+
+  window.salvarNovaEspecie = function(){
+    const nome=document.getElementById('new-esp-nome').value.trim().toUpperCase();
+    if(!nome){toast('Informe o nome da espécie','err');return;}
+    if(ESPECIES.find(function(e){return e.nome===nome;})){toast('Espécie já cadastrada','warn');return;}
+    const qd=document.getElementById('new-esp-qd').checked;
+    ESPECIES.push({nome,qdHabilitada:qd});ESPECIES.sort(function(a,b){return a.nome.localeCompare(b.nome);});
+    fecharM('modal-esp-new');toast('Espécie "'+nome+'" adicionada!'+(qd?' (QD habilitada)':''),'ok');
+    window.dbSalvarConfig('especies',ESPECIES);
+  };
+
+  window.salvarNovaCultivar = function(){
+    var nome=document.getElementById('new-cult-nome').value.trim().toUpperCase();
+    if(!nome){toast('Informe o nome da cultivar','err');return;}
+    if(CULTIVARES.indexOf(nome)>=0){toast('Cultivar já cadastrada','warn');return;}
+    CULTIVARES.push(nome);CULTIVARES.sort();
+    fecharM('modal-cult-new');toast('Cultivar "'+nome+'" adicionada!','ok');
+    window.dbSalvarConfig('cultivares',CULTIVARES);
+  };
+
+  window.adicionarAnalista = function(){
+    const inp=document.getElementById('novo-analista'),nome=inp.value.trim();
+    if(!nome)return;
+    if(analistas.includes(nome)){toast('Analista já cadastrado','warn');return;}
+    analistas.push(nome);inp.value='';renderListaAnalistas();toast(nome+' adicionado!','ok');
+    window.dbSalvarConfig('analistas',analistas);
+  };
+
+  window.removerAnalista = function(i){
+    analistas.splice(i,1);renderListaAnalistas();window.dbSalvarConfig('analistas',analistas);
+  };
+
+  window.toggleQDEspecie = function(nome){
+    const esp=ESPECIES.find(function(e){return e.nome===nome;});if(!esp)return;
+    esp.qdHabilitada=!esp.qdHabilitada;
+    renderEspList(document.getElementById('esp-search')?.value||'');
+    toast((esp.qdHabilitada?'⚙ QD habilitada para ':'QD desabilitada para ')+nome,esp.qdHabilitada?'ok':'warn');
+    window.dbSalvarConfig('especies',ESPECIES);
+  };
+
+  window.confirmarZerar = function(){
+    const inp=document.getElementById('inp-senha-reset');
+    if((inp?inp.value:'')!==SENHA_RESET){
+      if(inp){inp.value='';inp.focus();inp.style.borderColor='#ff3b3b';}
+      const msg=document.getElementById('msg-senha-reset');if(msg)msg.style.display='block';
+      toast('Senha incorreta!','err');return;
+    }
+    pendentes.length=0;preCondicionando.length=0;plantados.length=0;historico.length=0;
+    canteiros=Array.from({length:N_CANTEIROS},function(){return Array(VAGAS_POR_CANTEIRO).fill(null);});
+    const sb2=window._initSB();
+    if(sb2){
+      sb2.from('las_amostras').delete().neq('id','__none__').then(function({error}){if(error)console.error(error.message);});
+      sb2.from('las_config').delete().neq('chave','__none__').then(function(){});
+    }
+    const modal=document.getElementById('modal-zerar');if(modal)modal.remove();
+    toast('✓ Sistema zerado!','ok');atualizar();atualizarSelectsAnalistas();
+  };
+
+  window.confirmarRestaurar = async function(backupId){
+    if(!confirm('Restaurar este backup? Os dados atuais serão substituídos.'))return;
+    const sb2=window._initSB();
+    try{
+      const {data}=await sb2.from('las_backups').select('estado').eq('id',backupId).single();
+      if(!data){toast('Backup não encontrado','err');return;}
+      document.getElementById('modal-backups')?.remove();
+      toast('Restaurando... aguarde','warn');
+      const est=data.estado;
+      await sb2.from('las_amostras').delete().neq('id','__none__');
+      const toInsert=[];
+      function addRows(arr,status){(arr||[]).forEach(function(item){toInsert.push({id:item.id,proto:item.proto,fin:item.fin||'',teste:item.teste,cultivar:item.cultivar||'',especie:item.especie||'',ea_periodo:item.eaPeriodo||'',qd_ativo:item.qdAtivo||false,status:item.cancelado?'cancelado':status,ts:item.ts||Date.now(),plantado_em:item.plantadoEm||null,leitura_em:item.leituraEm||null,analista:item.analista||'',analista_leitura:item.analistaLeitura||'',leituras:item.leituras||[],leituras_realizadas:item.leiturasRealizadas||[],reteste:item.reteste||false,num_reteste:item.numReteste||0,cancelado:item.cancelado||false,canteiro_idx:item.canteiroIdx??-1,vaga_idx:item.vagaIdx??-1,updated_at:new Date().toISOString()});});}
+      addRows(est.pendentes,'pendente');addRows(est.preCondicionando,'preCondicionando');
+      addRows(est.plantados,'plantado');addRows(est.historico,'historico');
+      for(let i=0;i<toInsert.length;i+=100){const {error}=await sb2.from('las_amostras').insert(toInsert.slice(i,i+100));if(error)console.error('[RESTAURAR]',error.message);}
+      if(est.CULTIVARES)await sb2.from('las_config').upsert({chave:'cultivares',valor:est.CULTIVARES,updated_at:new Date().toISOString()});
+      if(est.ESPECIES)await sb2.from('las_config').upsert({chave:'especies',valor:est.ESPECIES,updated_at:new Date().toISOString()});
+      if(est.analistas)await sb2.from('las_config').upsert({chave:'analistas',valor:est.analistas,updated_at:new Date().toISOString()});
+      toast('✓ Backup restaurado! Recarregando...','ok');
+      setTimeout(function(){location.reload();},1500);
+    }catch(e){toast('Erro ao restaurar: '+e.message,'err');}
+  };
+
+  window.executarReteste = function(proto,teste){
+    const motivo=document.getElementById('inp-motivo-reteste')?.value?.trim()||'';
+    const itemOriginal=historico.find(function(h){return h.proto===proto&&h.teste===teste&&!h.cancelado;});
+    if(!itemOriginal){toast('Item não encontrado','err');return;}
+    const numReteste=historico.filter(function(h){return h.proto===proto&&h.teste===teste&&h.reteste;}).length+1;
+    const novoItem={id:uid(),proto:itemOriginal.proto,fin:itemOriginal.fin,teste:itemOriginal.teste,
+      ts:Date.now(),cultivar:itemOriginal.cultivar||'',especie:itemOriginal.especie||'',
+      eaPeriodo:itemOriginal.eaPeriodo||'',qdAtivo:itemOriginal.qdAtivo||false,
+      reteste:true,numReteste,motivoReteste:motivo,idOriginal:itemOriginal.id};
+    pendentes.unshift(novoItem);
+    window.dbInserirAmostra(novoItem,'pendente');
+    document.getElementById('modal-reteste')?.remove();
+    toast('↩ Reteste '+numReteste+' de '+proto+' — '+teste+' enviado para A Fazer','ok');
+    atualizar();
+  };
+
+  // Também atualiza visibilitychange para recarregar do novo banco
+  document.addEventListener('visibilitychange', async function() {
+    if(document.visibilityState!=='visible') return;
+    // Recarrega só se dados estiverem desatualizados (não interrompe fluxo ativo)
+    const modalAberto = document.querySelector('.overlay.open');
+    if(!modalAberto) {
+      renderFazer();renderAnalise();renderHist();renderCanteiros();renderRastreamento();
+    }
+  });
+
+  console.log('[PATCH v3] ✅ Todas as funções sobrescritas! Sistema multi-usuário ativo.');
+  console.log('[PATCH v3] Funções ativas: dbInserirAmostra, dbAtualizarAmostra, dbSalvarConfig');
+});
+
 
 </script>
 </body>
